@@ -12,8 +12,8 @@
 // @connect      api.pipedrive.com
 // @run-at       document-end
 // @noframes
-// @updateURL    https://<DEIN-STABILER-RAW-LINK>/pipedrive-highlighter.user.js
-// @downloadURL  https://<DEIN-STABILER-RAW-LINK>/pipedrive-highlighter.user.js
+// @updateURL    https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/Pipedrive-Email-Highlighter-1.7.7.user.js
+// @downloadURL  https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/Pipedrive-Email-Highlighter-1.7.7.user.js
 // ==/UserScript==
 
 
