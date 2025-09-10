@@ -12,8 +12,8 @@
 // @connect      api.pipedrive.com
 // @run-at       document-end
 // @noframes
-// @updateURL    https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/Pipedrive-Email-Highlighter-1.7.7.user.js
-// @downloadURL  https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/Pipedrive-Email-Highlighter-1.7.7.user.js
+// @updateURL    https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/Pipedrive-Email-Highlighter.user.js
+// @downloadURL  https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/Pipedrive-Email-Highlighter.user.js
 // ==/UserScript==
 
 
@@ -107,7 +107,7 @@
   function clearToken() { GM_setValue('pd_token', ''); alert('Pipedrive-Token gelöscht.'); }
 
   // ===== Menü =====
-  GM_registerMenuCommand('Markierung AN/AUS (Pipedrive)', toggleEnabled);
+  GM_registerMenuCommand(`Markierung AN/AUS (Pipedrive) — v${SCRIPT_VERSION}`, toggleEnabled);
   GM_registerMenuCommand('Nur aktiver Tab (AN/AUS)', toggleVisibleOnly);
   GM_registerMenuCommand('Nur sichtbarer Bereich (AN/AUS)', toggleViewportOnly);
   GM_registerMenuCommand('Pipedrive-Token setzen/ändern', setToken);
