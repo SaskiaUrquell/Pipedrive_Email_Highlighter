@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Pipedrive Email Highlighter (shareable)
+// @name         Pipedrive Email Highlighter 
 // @namespace    https://pakajo-helper
 // @version      1.7.7
-// @description  Markiert E-Mails rot/gelb/grün … (kurz halten)
+// @description  Markiert E-Mails rot/gelb/grün … 
 // @match        http*://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
