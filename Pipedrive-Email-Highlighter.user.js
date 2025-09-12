@@ -2,39 +2,38 @@
 // @name         Pipedrive Email Highlighter
 // @namespace    https://pakajo-helper
 // @version      1.8.0
-// @description  Markiert E-Mails rot/gelb/grün je nach Vorkommen in Pipedrive; Timeout/Retry, Wake-Resync, obfuskierte E-Mails, Viewport-Scan, Scope-Menü & Versionsanzeige.
+// @description  Markiert E-Mails rot/gelb/grün je nach Vorkommen in Pipedrive; nur im aktiven Tab; robuste Scan-Trigger; Timeout/Retry; obfuskierte E-Mails; Viewport-Scan; Versionsanzeige.
 // @match        http*://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
+// @grant        GM_openInTab
 // @connect      api.pipedrive.com
 // @run-at       document-start
 // @noframes
-// @updateURL    https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/Pipedrive-Email-Highlighter.user.js
-// @downloadURL  https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/Pipedrive-Email-Highlighter.user.js
+// @updateURL    https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/pipedrive-highlighter.user.js
+// @downloadURL  https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/pipedrive-highlighter.user.js
 // ==/UserScript==
 
 (function () {
   // ===== Version & Konstanten =====
   const SCRIPT_VERSION =
     (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version)
-      ? GM_info.script.version
-      : 'dev';
+      ? GM_info.script.version : 'dev';
 
-  // ===== Einstellungen =====
-  const CHECK_LEADS = true;
-  const THROTTLE_MS = 250;
+  // Laufzeit-Optionen
+  const ACTIVE_TAB_ONLY = true;   // immer nur im aktiven Tab arbeiten
+  const VIEWPORT_ONLY   = true;   // nur sichtbaren Bereich scannen
+  const CHECK_LEADS     = true;
+  const THROTTLE_MS     = 250;
 
   // Request-Policy
-  const REQUEST_TIMEOUT_MS = 10000; // 10s Timeout je Request
-  const MAX_RETRIES = 2;            // +2 Wiederholungen
-  const RETRY_BASE_DELAY_MS = 800;  // 0.8s, dann 1.6s Backoff
-  const DEEP_ORG_DETAIL_LIMIT = 6;  // max. Orga-Detailabrufe pro E-Mail
-
-  // Sichtbarkeits-/Scope-Optionen (per Menü änderbar)
-  const VIEWPORT_ONLY_DEFAULT = true; // nur sichtbarer Bereich
+  const REQUEST_TIMEOUT_MS  = 10000; // 10s Timeout je Request
+  const MAX_RETRIES         = 2;     // +2 Wiederholungen
+  const RETRY_BASE_DELAY_MS = 800;   // 0.8s, dann 1.6s Backoff
+  const DEEP_ORG_DETAIL_LIMIT = 6;
 
   // ===== CSS =====
   GM_addStyle(`
@@ -44,15 +43,15 @@
     .pd-email-error  { background: rgba(128,128,128,.12) !important; outline: 2px dashed rgba(128,128,128,.6) !important; border-radius:4px !important; padding:0 3px !important; }
   `);
 
-  // ===== Konstanten & Utils =====
+  // ===== Utils & Konstanten =====
   const API_V1 = 'https://api.pipedrive.com/v1';
   const API_V2 = 'https://api.pipedrive.com/api/v2';
   const EMAIL_RX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  const norm = (s) => String(s || '').toLowerCase().trim();
+  const norm  = (s) => String(s || '').toLowerCase().trim();
   const normEmail = (s) => norm(String(s).replace(/^mailto:/i, ''));
 
-  // Obfuskations-Tokens (info[at]domain dot com / punkt / ät etc.)
+  // Obfuskierte E-Mails (info[at]domain dot com / punkt / ät …)
   const OB_AT  = '(?:@|\\(at\\)|\\[at\\]|\\{at\\}|&commat;|\\bat\\b|\\bät\\b)';
   const OB_DOT = '(?:\\.|\\(dot\\)|\\[dot\\]|\\{dot\\}|\\bdot\\b|\\bpunkt\\b)';
   const OBFUSCATED_RX = new RegExp(
@@ -65,60 +64,21 @@
   function isEnabled() { return GM_getValue('pd_enabled', true); }
   function setEnabled(v) { GM_setValue('pd_enabled', !!v); }
 
-  function getVisibleOnly()  { return GM_getValue('pd_visible_only',  VISIBLE_ONLY_DEFAULT); }
-  function setVisibleOnly(v) { GM_setValue('pd_visible_only', !!v); }
-  function getViewportOnly() { return GM_getValue('pd_viewport_only', VIEWPORT_ONLY_DEFAULT); }
-  function setViewportOnly(v){ GM_SetValue('pd_viewport_only', !!v); } // NOTE: corrected below; keep API consistent
-
-  // ==== Scope-Steuerung (neu) ====
-  // Modi: 'all' | 'this-tab' | 'this-domain'
-  function getScopeMode()  { return GM_getValue('pd_scope_mode', 'all'); }
-  function setScopeMode(m) { GM_setValue('pd_scope_mode', m); }
-  function getScopeDomain(){ return GM_getValue('pd_scope_domain', ''); }
-  function setScopeDomain(d){ GM_setValue('pd_scope_domain', d); }
-  function getScopeTab()   { return GM_getValue('pd_scope_tab_token', ''); }
-  function setScopeTab(t)  { GM_setValue('pd_scope_tab_token', t); }
-
-  // Tab-Token (session-basiert; bleibt bis Tab geschlossen)
-  const TAB_TOKEN = (() => {
-    try {
-      let t = sessionStorage.getItem('pd_tab_token');
-      if (!t) {
-        t = ([...crypto.getRandomValues(new Uint8Array(12))]
-              .map(b => b.toString(16).padStart(2,'0')).join(''));
-        sessionStorage.setItem('pd_tab_token', t);
-      }
-      return t;
-    } catch {
-      return String(Math.random()).slice(2);
-    }
-  })();
-
-  // Domain normalisieren (ohne www.)
-  const CURRENT_DOMAIN = location.hostname.replace(/^www\./,'').toLowerCase();
-
-  function scopeAllowsRun() {
-    const mode = getScopeMode();
-    if (mode === 'all') return true;
-    if (mode === 'this-tab')    return getScopeTab()    === TAB_TOKEN;
-    if (mode === 'this-domain') return getScopeDomain() === CURRENT_DOMAIN;
-    return true;
-  }
-
   let observer = null;
   function stopObserver() { if (observer) { observer.disconnect(); observer = null; } }
+  function shouldRunNow() { return isEnabled() && (!ACTIVE_TAB_ONLY || !document.hidden); }
+
   function startObserver() {
-    if (!document.body || observer || !isEnabled()) return;
-    if (!scopeAllowsRun()) return;
-    if (getVisibleOnly() && document.hidden) return; // nur aktiver Tab
-    observer = new MutationObserver(() => { scheduleScan(150); });
+    if (!document.body || observer || !shouldRunNow()) return;
+    observer = new MutationObserver(() => scheduleScan(150));
     observer.observe(document.body, { childList: true, subtree: true });
   }
+
   function toggleEnabled() {
     const now = !isEnabled();
     setEnabled(now);
     if (now) { startObserver(); scan(); alert('Pipedrive-Markierung: AN'); }
-    else { stopObserver(); alert('Pipedrive-Markierung: AUS'); }
+    else     { stopObserver(); alert('Pipedrive-Markierung: AUS'); }
   }
 
   // ===== Token =====
@@ -133,52 +93,19 @@
   function setToken() { const t = prompt('Neuen Pipedrive API-Token eingeben:'); if (t) GM_setValue('pd_token', t.trim()); }
   function clearToken() { GM_setValue('pd_token', ''); alert('Pipedrive-Token gelöscht.'); }
 
-  // ===== Menü =====
-  // Info-Einträge (statisch; aktualisieren sich nach Reload)
+  // ===== Menü (kein Tab-Scope mehr) =====
   GM_registerMenuCommand(`Markierung AN/AUS (Pipedrive) — v${SCRIPT_VERSION}`, toggleEnabled);
-  GM_registerMenuCommand('Nur aktiver Tab (AN/AUS)', () => {
-    const v = !getVisibleOnly();
-    GM_setValue('pd_visible_only', v);
-    alert('Nur aktiver Tab: ' + (v ? 'AN' : 'AUS') + '\n(öffnet Menü erneut, um Einträge zu aktualisieren)');
-    stopObserver(); startObserver(); scheduleScan(50);
+  GM_registerMenuCommand('Seite scannen (Pipedrive)', () => scan(true));
+  GM_registerMenuCommand('Update prüfen/erzwingen', () => {
+    const info = (typeof GM_info !== 'undefined' && GM_info.script) ? GM_info.script : null;
+    const url = info?.scriptUpdateURL || info?.downloadURL;
+    if (url) (typeof GM_openInTab === 'function') ? GM_openInTab(url, { active: true, insert: true }) : window.open(url, '_blank');
+    else alert('Kein updateURL/downloadURL im Header gesetzt.');
   });
-
-  GM_registerMenuCommand('Nur sichtbarer Bereich (AN/AUS)', () => {
-    const v = !getViewportOnly();
-    GM_setValue('pd_viewport_only', v);
-    alert('Nur sichtbarer Bereich: ' + (v ? 'AN' : 'AUS'));
-    scheduleScan(50);
-  });
-
-  // Scope-Menü (neu)
-  GM_registerMenuCommand('Scope setzen: Alle Tabs/Fenster', () => {
-    setScopeMode('all'); setScopeTab(''); setScopeDomain('');
-    alert('Scope: Alle Tabs/Fenster');
-    stopObserver(); startObserver(); scheduleScan(50);
-  });
-  GM_registerMenuCommand('Scope setzen: Nur dieser Tab', () => {
-    setScopeMode('this-tab'); setScopeTab(TAB_TOKEN); setScopeDomain('');
-    alert('Scope: Nur dieser Tab (bis Tab geschlossen)');
-    stopObserver(); startObserver(); scheduleScan(50);
-  });
-  GM_registerMenuCommand(`Scope setzen: Nur diese Domain (${CURRENT_DOMAIN})`, () => {
-    setScopeMode('this-domain'); setScopeDomain(CURRENT_DOMAIN); setScopeTab('');
-    alert('Scope: Nur Domain ' + CURRENT_DOMAIN);
-    stopObserver(); startObserver(); scheduleScan(50);
-  });
-
-  // Token & Tools
   GM_registerMenuCommand('Pipedrive-Token setzen/ändern', setToken);
   GM_registerMenuCommand('Pipedrive-Token löschen', clearToken);
-  GM_registerMenuCommand('Seite scannen (Pipedrive)', () => scan(true));
-  GM_registerMenuCommand(`ⓘ Scope aktuell: ${(() => {
-    const m = getScopeMode();
-    if (m === 'this-tab') return 'Nur dieser Tab';
-    if (m === 'this-domain') return 'Nur Domain ' + getScopeDomain();
-    return 'Alle Tabs/Fenster';
-  })()}`, () => {});
 
-  // ===== Persistente Caches (über Tabs/Fenster) =====
+  // ===== Persistente Caches =====
   const emailCacheObj  = safeParse(GM_getValue('pd_email_cache',  '{}'));
   const domainCacheObj = safeParse(GM_getValue('pd_domain_cache', '{}'));
   const cache = new Map(Object.entries(emailCacheObj));        // email -> status
@@ -357,17 +284,11 @@
   async function statusForEmail(email) {
     const e = normEmail(email);
     if (!e || !e.includes('@')) return 'green';
-
-    // Rot: exakte Treffer
     if (await existsPersonByEmail(e)) return 'red';
     if (CHECK_LEADS) { try { if (await existsLeadByEmail(e)) return 'red'; } catch {} }
     if (await existsOrgByEmail(e)) return 'red';
-
-    // Gelb: Domain-Indiz
     const d = emailDomain(e);
     if (d && await anyContactOrOrgWithDomain(d)) return 'yellow';
-
-    // Grün: nix gefunden
     return 'green';
   }
 
@@ -419,7 +340,7 @@
     let el = node.parentElement;
     while (el) {
       const tn = el.tagName || '';
-      if (tn === 'A') return true; // bereits Link
+      if (tn === 'A') return true;
       if (el.isContentEditable) return true;
       if (el.matches && el.matches(
         'input, textarea, select, option, button,' +
@@ -435,7 +356,7 @@
   function linkEmailsInTextNode(node) {
     const parentEl = node.parentElement;
     if (!parentEl) return;
-    if (getViewportOnly() && parentEl && !isInViewport(parentEl)) return; // nur sichtbarer Bereich
+    if (VIEWPORT_ONLY && parentEl && !isInViewport(parentEl)) return;
     if (shouldSkipTextNode(node)) return;
 
     const text = node.nodeValue || '';
@@ -453,10 +374,7 @@
     while ((m = OBFUSCATED_RX.exec(text))) {
       const user = m[1];
       const rawDomain = m[2];
-      const domain = rawDomain
-        .replace(DOT_TOKEN_RX, '.')   // dot/punkt → .
-        .replace(/[()\[\]{}]/g, '')   // Klammern raus
-        .replace(/\s+/g, '');         // Leerzeichen raus
+      const domain = rawDomain.replace(DOT_TOKEN_RX, '.').replace(/[()\[\]{}]/g, '').replace(/\s+/g, '');
       const email = `${user}@${domain}`;
       if (/^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(email)) {
         matches.push({ start: m.index, end: m.index + m[0].length, email });
@@ -465,7 +383,6 @@
 
     if (!matches.length) return;
 
-    // Nach Start index sortieren & Überlappungen vermeiden
     matches.sort((a,b) => a.start - b.start);
     const frag = document.createDocumentFragment();
     let last = 0;
@@ -484,18 +401,17 @@
   }
 
   async function processMailtos(root = document) {
-    if (!isEnabled() || !scopeAllowsRun()) return;
-    if (getVisibleOnly() && document.hidden) return;
+    if (!shouldRunNow()) return;
 
     const anchors = Array.from(root.querySelectorAll('a')).filter(a => {
       const href = norm(a.getAttribute('href') || '');
       if (!href.startsWith('mailto:')) return false;
-      return getViewportOnly() ? isInViewport(a) : true;
+      return VIEWPORT_ONLY ? isInViewport(a) : true;
     });
 
     for (const a of anchors) {
       if (a.dataset._pd_done === '1') continue;
-      a.dataset._pd_done = '1'; // gegen Parallel-Scans
+      a.dataset._pd_done = '1';
 
       const raw = (a.getAttribute('href') || '').replace(/^mailto:/i, '').split('?')[0].trim();
       const emails = raw.split(',').map(s => s.trim()).filter(Boolean);
@@ -511,8 +427,7 @@
   }
 
   function findPlainTextEmails(root = document) {
-    if (!isEnabled() || !scopeAllowsRun()) return;
-    if (getVisibleOnly() && document.hidden) return;
+    if (!shouldRunNow()) return;
 
     const walker = document.createTreeWalker(root.body || root, NodeFilter.SHOW_TEXT, null);
     const nodes = [];
@@ -528,32 +443,34 @@
 
   let scanning = false;
   async function scan() {
-    if (scanning || !isEnabled() || !scopeAllowsRun()) return;
-    if (getVisibleOnly() && document.hidden) return;
+    if (scanning || !shouldRunNow()) return;
     scanning = true;
     try { findPlainTextEmails(document); await processMailtos(document); }
     finally { scanning = false; }
   }
 
-  // ===== Wake/Resync & Sichtbarkeitswechsel =====
-  function resync(reason) {
-    try {
-      startObserver();
-      scheduleScan(50);
-      console.log('[Pipedrive Highlighter] Resync:', reason);
-    } catch (e) { console.warn('[Pipedrive Highlighter] Resync-Fehler:', e); }
+  // ===== Robust starten: auf <body> warten & Fallback-Scans =====
+  function whenBodyReady(cb) {
+    if (document.body) { cb(); return; }
+    const mo = new MutationObserver(() => {
+      if (document.body) { mo.disconnect(); cb(); }
+    });
+    mo.observe(document.documentElement || document, { childList: true, subtree: true });
   }
-  window.addEventListener('focus', () => resync('focus'));
-  window.addEventListener('online', () => resync('online'));
+
+  function resync(reason) { try { startObserver(); scheduleScan(50); } catch {} }
+
+  // Aktiver Tab: Start/Stop
   document.addEventListener('visibilitychange', () => {
     if (!isEnabled()) return;
-    if (getVisibleOnly()) {
-      if (document.hidden) { stopObserver(); }
-      else { startObserver(); scheduleScan(50); }
-    }
+    if (document.hidden) { stopObserver(); clearTimeout(window._pd_scan_t); }
+    else { startObserver(); scheduleScan(50); }
   });
 
-  // > 60s „Zeitloch“ ⇒ Wake (z.B. nach Ruhemodus)
+  window.addEventListener('focus', () => resync('focus'));
+  window.addEventListener('online', () => resync('online'));
+
+  // > 60s Pause => Wake (z. B. nach Ruhemodus)
   let lastTick = Date.now();
   setInterval(() => {
     const now = Date.now();
@@ -561,32 +478,35 @@
     lastTick = now;
   }, 20000);
 
-  // Schnell-Scan nach UI-Events (Overlays/Popups)
-  ['click','hashchange','popstate'].forEach(ev =>
-    window.addEventListener(ev, () => scheduleScan(120), true)
+  // Neue Overlays/Popups/Scroll → kurz nachscannen
+  ['click','hashchange','popstate','scroll'].forEach(ev =>
+    window.addEventListener(ev, () => scheduleScan(150), true)
   );
-  // Hotkey: ALT + S → Scan
-  window.addEventListener('keydown', (e) => {
-    if (e.altKey && (e.key || '').toLowerCase() === 's') {
-      e.stopPropagation();
-      scheduleScan(10);
-    }
-  }, true);
 
-  // ===== Run =====
-  async function run() {
+  // ===== Run (mit Body-Watch & Fallback-Scans) =====
+  function boot() {
     try {
       getToken();
-      if (isEnabled() && scopeAllowsRun()) { await scan(); startObserver(); console.log('[Pipedrive Highlighter] aktiv v' + SCRIPT_VERSION); }
-      else { stopObserver(); console.log('[Pipedrive Highlighter] AUS v' + SCRIPT_VERSION); }
+      if (shouldRunNow()) {
+        startObserver();
+        scan();                     // sofort
+        setTimeout(() => shouldRunNow() && scan(), 800);   // Fallback 1
+        setTimeout(() => shouldRunNow() && scan(), 3000);  // Fallback 2
+        console.log('[Pipedrive Highlighter] aktiv v' + SCRIPT_VERSION);
+      } else {
+        console.log('[Pipedrive Highlighter] pausiert (nicht aktiver Tab) v' + SCRIPT_VERSION);
+      }
     } catch (e) { console.warn('[Pipedrive Highlighter]', e); }
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run, { once: true });
-  else run();
 
-  // Debug-Helfer:
+  if (document.readyState === 'loading') {
+    // Start so früh wie möglich – aber sicher mit Body
+    whenBodyReady(boot);
+    document.addEventListener('DOMContentLoaded', () => whenBodyReady(boot), { once: true });
+  } else {
+    whenBodyReady(boot);
+  }
+
+  // Debug
   window._pd_clearCaches = () => { cache.clear(); domainCache.clear(); persistNow(); console.log('[Pipedrive] Caches geleert'); };
-
-  // Fix Tippfehler oben (falls du den Setter brauchst)
-  function GM_SetValue(k, v){ try{ GM_setValue(k,v); }catch{} }
 })();
