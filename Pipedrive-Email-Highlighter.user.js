@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pipedrive Email Highlighter
 // @namespace    https://pakajo-helper
-// @version      1.7.8
+// @version      1.7.9
 // @description  Markiert E-Mails rot/gelb/grün je nach Vorkommen in Pipedrive; Timeout/Retry, Wake-Resync, obfuskierte E-Mails, Viewport-Scan, Scope-Menü & Versionsanzeige.
 // @match        http*://*/*
 // @grant        GM_xmlhttpRequest
@@ -34,7 +34,6 @@
   const DEEP_ORG_DETAIL_LIMIT = 6;  // max. Orga-Detailabrufe pro E-Mail
 
   // Sichtbarkeits-/Scope-Optionen (per Menü änderbar)
-  const VISIBLE_ONLY_DEFAULT  = true; // nur aktiver Tab
   const VIEWPORT_ONLY_DEFAULT = true; // nur sichtbarer Bereich
 
   // ===== CSS =====
