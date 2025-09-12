@@ -13,8 +13,8 @@
 // @connect      api.pipedrive.com
 // @run-at       document-start
 // @noframes
-// @updateURL    https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/pipedrive-email-highlighter.user.js
-// @downloadURL  https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/pipedrive-email-highlighter.user.js
+// @updateURL    https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/Pipedrive-Email-Highlighter.user.js
+// @downloadURL  https://raw.githubusercontent.com/SaskiaUrquell/Pipedrive_Email_Highlighter/main/Pipedrive-Email-Highlighter.user.js
 // ==/UserScript==
 
 (function () {
